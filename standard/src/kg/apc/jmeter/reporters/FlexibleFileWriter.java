@@ -2,7 +2,21 @@
 // TODO: buffer file writes to bigger chunks?
 package kg.apc.jmeter.reporters;
 
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.Serializable;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import kg.apc.jmeter.JMeterPluginsUtils;
+
 import org.apache.jmeter.engine.util.NoThreadClone;
 import org.apache.jmeter.reporters.AbstractListenerElement;
 import org.apache.jmeter.reporters.ResultCollector;
@@ -14,16 +28,6 @@ import org.apache.jmeter.testelement.TestStateListener;
 import org.apache.jmeter.util.JMeterUtils;
 import org.apache.jorphan.logging.LoggingManager;
 import org.apache.log.Logger;
-
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.Serializable;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
-import java.util.ArrayList;
-import java.util.Arrays;
 
 /**
  * @see ResultCollector
@@ -57,87 +61,89 @@ public class FlexibleFileWriter
     private int[] compiledVars;
     private int[] compiledFields;
     private ByteBuffer[] compiledConsts;
-    private ArrayList<String> availableFieldNames = new ArrayList<String>(Arrays.asList(AVAILABLE_FIELDS.trim().split(" ")));
+    private final ArrayList<String> availableFieldNames = new ArrayList<String>(Arrays.asList(AVAILABLE_FIELDS.trim().split(" ")));
     private static final byte[] b1 = "1".getBytes();
     private static final byte[] b0 = "0".getBytes();
+
+    private static final Map<String, Object[]> FILE_CHANNEL_AND_REFERENCE_COUNT_BY_FILENAME = new HashMap<String, Object[]>();
 
     public FlexibleFileWriter() {
         super();
     }
 
     @Override
-    public void sampleStarted(SampleEvent e) {
+    public void sampleStarted(final SampleEvent e) {
     }
 
     @Override
-    public void sampleStopped(SampleEvent e) {
+    public void sampleStopped(final SampleEvent e) {
     }
 
     @Override
     public void testStarted() {
-        compileColumns();
+        this.compileColumns();
         try {
-            openFile();
-        } catch (FileNotFoundException ex) {
-            log.error("Cannot open file " + getFilename(), ex);
-        } catch (IOException ex) {
-            log.error("Cannot write file header " + getFilename(), ex);
+            this.openFile();
+        } catch (final FileNotFoundException ex) {
+            log.error("Cannot open file " + this.getFilename(), ex);
+        } catch (final IOException ex) {
+            log.error("Cannot write file header " + this.getFilename(), ex);
         }
     }
 
     @Override
-    public void testStarted(String host) {
-        testStarted();
+    public void testStarted(final String host) {
+        this.testStarted();
     }
 
     @Override
     public void testEnded() {
-        closeFile();
+        this.closeFile();
     }
 
     @Override
-    public void testEnded(String host) {
-        testEnded();
+    public void testEnded(final String host) {
+        this.testEnded();
     }
 
-    public void setFilename(String name) {
-        setProperty(FILENAME, name);
+    public void setFilename(final String name) {
+        this.setProperty(FILENAME, name);
     }
 
     public String getFilename() {
-        return getPropertyAsString(FILENAME);
+        return this.getPropertyAsString(FILENAME);
     }
 
-    public void setColumns(String cols) {
-        setProperty(COLUMNS, cols);
+    public void setColumns(final String cols) {
+        this.setProperty(COLUMNS, cols);
     }
 
     public String getColumns() {
-        return getPropertyAsString(COLUMNS);
+        return this.getPropertyAsString(COLUMNS);
     }
 
     public boolean isOverwrite() {
-        return getPropertyAsBoolean(OVERWRITE, false);
+        return this.getPropertyAsBoolean(OVERWRITE, false);
     }
 
-    public void setOverwrite(boolean ov) {
-        setProperty(OVERWRITE, ov);
+    public void setOverwrite(final boolean ov) {
+        this.setProperty(OVERWRITE, ov);
     }
 
-    public void setFileHeader(String str) {
-        setProperty(HEADER, str);
+    public void setFileHeader(final String str) {
+        this.setProperty(HEADER, str);
     }
 
     public String getFileHeader() {
-        return getPropertyAsString(HEADER);
+        return this.getPropertyAsString(HEADER);
     }
 
-    public void setFileFooter(String str) {
-        setProperty(FOOTER, str);
+    public void setFileFooter(final String str) {
+        this.setProperty(FOOTER, str);
     }
 
     public String getFileFooter() {
-        return getPropertyAsString(FOOTER);
+        return this.getPropertyAsString(FOOTER);
     }
 
     /**
@@ -145,28 +151,28 @@ public class FlexibleFileWriter
      * operators
      */
     private void compileColumns() {
-        log.debug("Compiling columns string: " + getColumns());
-        String[] chunks = JMeterPluginsUtils.replaceRNT(getColumns()).split("\\|");
+        log.debug("Compiling columns string: " + this.getColumns());
+        final String[] chunks = JMeterPluginsUtils.replaceRNT(this.getColumns()).split("\\|");
         log.debug("Chunks " + chunks.length);
-        compiledFields = new int[chunks.length];
-        compiledVars = new int[chunks.length];
-        compiledConsts = new ByteBuffer[chunks.length];
+        this.compiledFields = new int[chunks.length];
+        this.compiledVars = new int[chunks.length];
+        this.compiledConsts = new ByteBuffer[chunks.length];
         for (int n = 0; n < chunks.length; n++) {
-            int fieldID = availableFieldNames.indexOf(chunks[n]);
+            final int fieldID = this.availableFieldNames.indexOf(chunks[n]);
             if (fieldID >= 0) {
                 //log.debug(chunks[n] + " field id: " + fieldID);
-                compiledFields[n] = fieldID;
+                this.compiledFields[n] = fieldID;
             } else {
-                compiledFields[n] = -1;
-                compiledVars[n] = -1;
+                this.compiledFields[n] = -1;
+                this.compiledVars[n] = -1;
                 if (chunks[n].contains(VAR_PREFIX)) {
                     log.debug(chunks[n] + " is sample variable");
-                    String varN = chunks[n].substring(VAR_PREFIX.length());
+                    final String varN = chunks[n].substring(VAR_PREFIX.length());
                     try {
-                        compiledVars[n] = Integer.parseInt(varN);
-                    } catch (NumberFormatException e) {
+                        this.compiledVars[n] = Integer.parseInt(varN);
+                    } catch (final NumberFormatException e) {
                         log.error("Seems it is not variable spec: " + chunks[n]);
-                        compiledConsts[n] = ByteBuffer.wrap(chunks[n].getBytes());
+                        this.compiledConsts[n] = ByteBuffer.wrap(chunks[n].getBytes());
                     }
                 } else {
                     log.debug(chunks[n] + " is const");
@@ -175,57 +181,94 @@ public class FlexibleFileWriter
                         chunks[n] = "|";
                     }
 
-                    compiledConsts[n] = ByteBuffer.wrap(chunks[n].getBytes());
+                    this.compiledConsts[n] = ByteBuffer.wrap(chunks[n].getBytes());
                 }
             }
         }
     }
 
     protected void openFile() throws IOException {
-        String filename = getFilename();
-        FileOutputStream fos = new FileOutputStream(filename, !isOverwrite());
-        fileChannel = fos.getChannel();
+        final String filename = this.getFilename();
 
-        String header = JMeterPluginsUtils.replaceRNT(getFileHeader());
-        if (!header.isEmpty()) {
-            fileChannel.write(ByteBuffer.wrap(header.getBytes()));
+        final Object[] entry = FILE_CHANNEL_AND_REFERENCE_COUNT_BY_FILENAME.get(filename);
+
+        synchronized(FlexibleFileWriter.class)
+        {
+            if(entry != null && entry.length == 2 && entry[0] instanceof FileChannel && entry[1] instanceof AtomicInteger)
+            {
+                this.fileChannel = (FileChannel)entry[0];
+                ((AtomicInteger)entry[1]).incrementAndGet();
+            }
+            else
+            {
+                final FileOutputStream fos = new FileOutputStream(filename, !this.isOverwrite());
+                this.fileChannel = fos.getChannel();
+
+                final String header = JMeterPluginsUtils.replaceRNT(this.getFileHeader());
+                if (!header.isEmpty()) {
+                    this.fileChannel.write(ByteBuffer.wrap(header.getBytes()));
+                }
+
+                FILE_CHANNEL_AND_REFERENCE_COUNT_BY_FILENAME.put(filename, new Object[]{this.fileChannel, new AtomicInteger(1)});
+            }
         }
     }
 
     private synchronized void closeFile() {
-        if (fileChannel != null && fileChannel.isOpen()) {
-            try {
-                String footer = JMeterPluginsUtils.replaceRNT(getFileFooter());
-                if (!footer.isEmpty()) {
-                    fileChannel.write(ByteBuffer.wrap(footer.getBytes()));
+        synchronized(FlexibleFileWriter.class)
+        {
+            if (this.fileChannel != null && this.fileChannel.isOpen()) {
+
+                final String filename = this.getFilename();
+
+                final Object[] entry = FILE_CHANNEL_AND_REFERENCE_COUNT_BY_FILENAME.get(filename);
+
+                boolean doClose = true;
+                if(entry != null && entry.length == 2 && entry[0] instanceof FileChannel && entry[1] instanceof AtomicInteger)
+                {
+                    if(((AtomicInteger)entry[1]).decrementAndGet() > 0)
+                    {
+                        doClose = false;
+                        FILE_CHANNEL_AND_REFERENCE_COUNT_BY_FILENAME.remove(filename);
+                    }
                 }
 
-                fileChannel.force(false);
-                fileChannel.close();
-            } catch (IOException ex) {
-                log.error("Failed to close file: " + getFilename(), ex);
+                if (doClose)
+                {
+                    try {
+                        final String footer = JMeterPluginsUtils.replaceRNT(this.getFileFooter());
+                        if (!footer.isEmpty()) {
+                            this.fileChannel.write(ByteBuffer.wrap(footer.getBytes()));
+                        }
+
+                        this.fileChannel.force(false);
+                        this.fileChannel.close();
+                    } catch (final IOException ex) {
+                        log.error("Failed to close file: " + filename, ex);
+                    }
+                }
             }
         }
     }
 
     @Override
-    public void sampleOccurred(SampleEvent evt) {
-        if (fileChannel == null || !fileChannel.isOpen()) {
+    public void sampleOccurred(final SampleEvent evt) {
+        if (this.fileChannel == null || !this.fileChannel.isOpen()) {
             if (log.isWarnEnabled()) {
                 log.warn("File writer is closed! Maybe test has already been stopped");
             }
             return;
         }
 
-        ByteBuffer buf = ByteBuffer.allocateDirect(writeBufferSize);
-        for (int n = 0; n < compiledConsts.length; n++) {
-            if (compiledConsts[n] != null) {
-                synchronized (compiledConsts) {
-                    buf.put(compiledConsts[n].duplicate());
+        final ByteBuffer buf = ByteBuffer.allocateDirect(this.writeBufferSize);
+        for (int n = 0; n < this.compiledConsts.length; n++) {
+            if (this.compiledConsts[n] != null) {
+                synchronized (this.compiledConsts) {
+                    buf.put(this.compiledConsts[n].duplicate());
                 }
             } else {
-                if (!appendSampleResultField(buf, evt.getResult(), compiledFields[n])) {
-                    appendSampleVariable(buf, evt, compiledVars[n]);
+                if (!this.appendSampleResultField(buf, evt.getResult(), this.compiledFields[n])) {
+                    this.appendSampleVariable(buf, evt, this.compiledVars[n]);
                 }
             }
         }
@@ -233,33 +276,42 @@ public class FlexibleFileWriter
         buf.flip();
 
         try {
-            syncWrite(buf);
-        } catch (IOException ex) {
+            this.syncWrite(buf);
+        } catch (final IOException ex) {
             log.error("Problems writing to file", ex);
         }
     }
 
-    private synchronized void syncWrite(ByteBuffer buf) throws IOException {
-        FileLock lock = fileChannel.lock();
-        fileChannel.write(buf);
-        lock.release();
+    private void syncWrite(final ByteBuffer buf) throws IOException {
+        synchronized (this.fileChannel)
+        {
+            final FileLock lock = this.fileChannel.lock();
+            try
+            {
+                this.fileChannel.write(buf);
+            }
+            finally
+            {
+                lock.release();
+            }
+        }
     }
 
     /*
      * we work with timestamps, so we assume number > 1000 to avoid tests
      * to be faster
      */
-    private String getShiftDecimal(long number, int shift) {
-        StringBuilder builder = new StringBuilder();
+    private String getShiftDecimal(final long number, final int shift) {
+        final StringBuilder builder = new StringBuilder();
         builder.append(number);
 
-        int index = builder.length() - shift;
+        final int index = builder.length() - shift;
         builder.insert(index, ".");
 
         return builder.toString();
     }
 
-    private void appendSampleVariable(ByteBuffer buf, SampleEvent evt, int varID) {
+    private void appendSampleVariable(final ByteBuffer buf, final SampleEvent evt, final int varID) {
         if (SampleEvent.getVarCount() < varID + 1) {
             buf.put(("UNDEFINED_variable#" + varID).getBytes());
             log.warn("variable#" + varID + " does not exist!");
@@ -273,7 +325,7 @@ public class FlexibleFileWriter
     /**
      * @return boolean true if existing field found, false instead
      */
-    private boolean appendSampleResultField(ByteBuffer buf, SampleResult result, int fieldID) {
+    private boolean appendSampleResultField(final ByteBuffer buf, final SampleResult result, final int fieldID) {
         // IMPORTANT: keep this as fast as possible
         switch (fieldID) {
             case 0:
@@ -333,11 +385,11 @@ public class FlexibleFileWriter
                 break;
 
             case 12:
-                buf.put(getShiftDecimal(result.getStartTime(), 3).getBytes());
+                buf.put(this.getShiftDecimal(result.getStartTime(), 3).getBytes());
                 break;
 
             case 13:
-                buf.put(getShiftDecimal(result.getEndTime(), 3).getBytes());
+                buf.put(this.getShiftDecimal(result.getEndTime(), 3).getBytes());
                 break;
 
             case 14:
